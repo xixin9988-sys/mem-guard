@@ -1,4 +1,6 @@
-﻿# mem-guard
+﻿> **v0.1.1 status (verified):** issuer attestation, atomic supersede, consumer policy, audit log and ConflictReport are implemented and tested (33 passed). **JSON persistence (store.py) is not in this tree yet**; the README claim about Guard(path=...) is aspirational and tracked in the roadmap.
+
+# mem-guard
 
 **Memory Reliability & Governance Middleware** for AI agents. **v0.1.1 — governance integrity.**
 
@@ -165,4 +167,5 @@ ruff check .
   it has enough evidence and signal.
 - The benchmark is synthetic (8 seeds, 3 questions); it demonstrates the governance mechanism,
   not a production error-rate reduction.
+
 
