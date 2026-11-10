@@ -1,6 +1,6 @@
-# mem-guard
+﻿# mem-guard
 
-**Memory Reliability & Governance Middleware** for AI agents.
+**Memory Reliability & Governance Middleware** for AI agents. **v0.1.1 — governance integrity.**
 
 Your agent remembers a lot. mem-guard decides what it is allowed to **believe**, **serve** and
 **act on** — with provenance, governed state, precompiled trust policies and a rule compiler.
@@ -86,11 +86,11 @@ document. Three questions, top-3 context:
 | metric | naive retrieval | mem-guard | better |
 | --- | --- | --- | --- |
 | valid hit rate | 1.0 | 1.0 | higher |
-| contamination rate | 1.0 | **0.0** | lower |
-| stale value served | 0.33 | **0.0** | lower |
-| hallucination served | 0.67 | **0.0** | lower |
-| injection served | 0.33 | **0.0** | lower |
-| trust violations | 0 | 0 | lower |
+| contamination rate | 0.556 | **0.0** | lower |
+| stale value served | 0.222 | **0.0** | lower |
+| hallucination served | 0.222 | **0.0** | lower |
+| injection served | 0.111 | **0.0** | lower |
+| trust violations | 3 | **0** | lower |
 
 Governed retrieval keeps the valid answer while serving none of the seeded contamination.
 Reproduce:
@@ -138,7 +138,7 @@ If two equally specific rules disagree, the compiler returns `REQUIRE_CONFIRM` w
 | P1 | trust partitions + policy precompilation | **implemented** |
 | P2 | rule compiler + conflict escalation | **implemented** |
 | P3 | consolidation gate heuristics | **implemented (deterministic)** |
-| P4 | persistence adapters (SQLite), multi-agent shared store | not implemented |
+| P4 | JSON store persistence (SQLite next), multi-agent shared store | partial: JSON store shipped |
 | P5 | LLM-assisted candidate extraction behind the gate | not implemented (by design) |
 
 ## Relation to NanoMemory
@@ -165,3 +165,4 @@ ruff check .
   it has enough evidence and signal.
 - The benchmark is synthetic (8 seeds, 3 questions); it demonstrates the governance mechanism,
   not a production error-rate reduction.
+
