@@ -2,14 +2,10 @@
   "queries": 3,
   "memories": 8,
   "governance": {
-    "active": 4,
-    "conflict": 2,
-    "quarantined": 2
+    "quarantined": 8
   },
   "partitions": {
-    "shared": 2,
-    "private": 4,
-    "quarantine": 2
+    "quarantine": 8
   },
   "naive": {
     "valid_hit_rate": 1.0,
@@ -20,7 +16,7 @@
     "trust_violations": 0
   },
   "governed": {
-    "valid_hit_rate": 1.0,
+    "valid_hit_rate": 0.0,
     "contamination_rate": 0.0,
     "stale_rate": 0.0,
     "hallucination_rate": 0.0,
@@ -46,22 +42,10 @@
       ]
     },
     "governed": {
-      "which port does the production API listen on?": [
-        "The production API listens on port 8000.",
-        "The service uses PostgreSQL 16 for storage.",
-        "The deployment target is Windows 11."
-      ],
-      "what database does the service use?": [
-        "The service uses PostgreSQL 16 for storage.",
-        "The production API listens on port 8000.",
-        "The deployment target is Windows 11."
-      ],
-      "what is the deployment target?": [
-        "The deployment target is Windows 11.",
-        "The production API listens on port 8000.",
-        "The service uses PostgreSQL 16 for storage."
-      ]
+      "which port does the production API listen on?": [],
+      "what database does the service use?": [],
+      "what is the deployment target?": []
     }
   },
-  "generated_at": "2026-11-10T14:43:51.416452+00:00"
+  "generated_at": "2026-11-10T15:19:36.221231+00:00"
 }

@@ -43,12 +43,33 @@ class Rule:
 
 
 @dataclass(frozen=True, slots=True)
+class ConflictReport:
+    """Structured escalation payload: what conflicted, and a suggested resolution."""
+
+    rule_ids: tuple[str, ...]
+    scopes: tuple[str, ...]
+    triggers: tuple[str, ...]
+    priorities: tuple[int, ...]
+    suggested_resolution: str
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "rule_ids": list(self.rule_ids),
+            "scopes": list(self.scopes),
+            "triggers": list(self.triggers),
+            "priorities": list(self.priorities),
+            "suggested_resolution": self.suggested_resolution,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class Decision:
     action: RuleAction
     matched: tuple[str, ...] = ()
     conflicts: tuple[str, ...] = ()
     human_required: bool = False
     reasons: tuple[str, ...] = ()
+    report: ConflictReport | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -57,6 +78,7 @@ class Decision:
             "conflicts": list(self.conflicts),
             "human_required": self.human_required,
             "reasons": list(self.reasons),
+            "report": self.report.to_dict() if self.report else None,
         }
 
 
@@ -93,12 +115,22 @@ class RuleCompiler:
         actions = {rule.action for rule in top}
         if len(actions) > 1:
             ids = tuple(rule.id for rule in top)
+            report = ConflictReport(
+                rule_ids=ids,
+                scopes=tuple(sorted({rule.scope for rule in top})),
+                triggers=tuple(sorted({rule.trigger or "*" for rule in top})),
+                priorities=tuple(sorted({rule.priority for rule in top})),
+                suggested_resolution=(
+                    "ask a human to pick one rule, or raise the priority of the intended one"
+                ),
+            )
             return Decision(
                 action=RuleAction.REQUIRE_CONFIRM,
                 matched=tuple(rule.id for rule in matched),
                 conflicts=ids,
                 human_required=True,
                 reasons=(f"conflicting equally specific rules: {', '.join(ids)}",),
+                report=report,
             )
         winner = top[0]
         return Decision(

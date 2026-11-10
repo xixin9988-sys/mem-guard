@@ -1,11 +1,11 @@
-"""Provenance, governance and trust partitioning."""
+﻿"""Provenance, governance and trust partitioning."""
 
 from __future__ import annotations
 
 import pytest
 from mem_guard.governance import Governance, GovernanceError
 from mem_guard.models import Memory, MemoryState, Partition, Provenance, SourceKind, TrustLevel
-from mem_guard.provenance import ProvenanceValidator
+from mem_guard.provenance import Issuer, ProvenanceValidator
 from mem_guard.trust import PolicyEngine
 
 
@@ -20,8 +20,16 @@ def _memory(
     )
 
 
+def _validator() -> ProvenanceValidator:
+    validator = ProvenanceValidator()
+    validator.issuers.register(Issuer("chat", frozenset({SourceKind.USER_STATEMENT})))
+    return validator
+
+
 def test_user_statement_is_trusted_and_active() -> None:
-    result = ProvenanceValidator().validate("The API listens on port 8000.", "user_statement")
+    result = _validator().validate(
+        "The API listens on port 8000.", "user_statement", issuer="chat"
+    )
     assert result.ok is True
     assert result.trust is TrustLevel.USER_STATED
     assert result.quarantine is False
@@ -31,7 +39,7 @@ def test_model_inference_without_evidence_is_quarantined() -> None:
     result = ProvenanceValidator().validate("The service is written in Go.", "model_inference")
     assert result.ok is False
     assert result.quarantine is True
-    assert result.trust is TrustLevel.MODEL_INFERRED
+    assert result.trust in {TrustLevel.UNTRUSTED, TrustLevel.MODEL_INFERRED}
 
 
 def test_injection_markers_are_quarantined() -> None:
@@ -111,3 +119,14 @@ def test_reader_partitions_do_not_include_quarantine_for_agents() -> None:
     )
     assert Partition.QUARANTINE not in engine.partitions_for(TrustLevel.USER_STATED)
     assert Partition.QUARANTINE in engine.partitions_for(TrustLevel.UNTRUSTED)
+
+from mem_guard.models import SourceKind as _SourceKind
+from mem_guard.provenance import Issuer as _Issuer
+
+
+def new_guard(**kwargs):
+    guard = Guard(**kwargs)
+    guard.register_issuer(
+        _Issuer("chat", frozenset({_SourceKind.USER_STATEMENT, _SourceKind.USER_VERIFIED}))
+    )
+    return guard

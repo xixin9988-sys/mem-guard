@@ -1,4 +1,4 @@
-"""Contamination benchmark: naive retrieval vs mem-guard governance.
+﻿"""Contamination benchmark: naive retrieval vs mem-guard governance.
 
 Seeds a store with four failure classes — outdated, contradictory, hallucinated and injected
 memories — then compares what a naive top-k retriever serves with what mem-guard serves.
@@ -88,10 +88,12 @@ def governed_search(guard: Guard, query: str, *, limit: int = 3) -> list[str]:
 
 
 def _rate(hits: list[list[str]], markers: tuple[str, ...]) -> float:
-    if not hits:
+    """Per served item, not per query: one bad item in a context still counts."""
+    served = [content for group in hits for content in group]
+    if not served:
         return 0.0
-    served = sum(1 for group in hits if any(m in " ".join(group) for m in markers))
-    return served / len(hits)
+    contaminated = sum(1 for content in served if any(m in content for m in markers))
+    return contaminated / len(served)
 
 
 def _valid(hits: list[list[str]], expected: str) -> float:
@@ -100,13 +102,17 @@ def _valid(hits: list[list[str]], expected: str) -> float:
     return sum(1 for group in hits if any(expected in content for content in group)) / len(hits)
 
 
-def _trust_violations(guard: Guard, query: str, required: TrustLevel) -> int:
+def _trust_violations(hits: list[list[str]], guard: Guard, required: TrustLevel) -> int:
+    """Violations among the items each strategy actually served."""
+    by_content = {memory.content: memory for memory in guard.governance.memories.values()}
     violations = 0
-    for hit in guard.search(query, limit=10, require_trust_level=required):
-        if trust_rank(hit.memory.trust) < trust_rank(required):
-            violations += 1
-        if hit.memory.partition.value == "quarantine":
-            violations += 1
+    for group in hits:
+        for content in group:
+            memory = by_content.get(content)
+            if memory is None:
+                continue
+            if trust_rank(memory.trust) < trust_rank(required) or memory.partition.value == "quarantine":
+                violations += 1
     return violations
 
 
@@ -116,6 +122,7 @@ def run() -> dict[str, object]:
         guard.add(
             seed.content,
             source=seed.source,
+            issuer="chat" if seed.source in {"user_verified", "user_stated", "user_statement"} else None,
             tags=seed.tags,
             evidence=seed.evidence,
             is_preference=seed.is_preference,
@@ -145,9 +152,8 @@ def run() -> dict[str, object]:
             "stale_rate": round(_rate(naive_hits, STALE_MARKERS), 4),
             "hallucination_rate": round(_rate(naive_hits, HALLUCINATION_MARKERS), 4),
             "injection_rate": round(_rate(naive_hits, INJECTION_MARKERS), 4),
-            "trust_violations": sum(
-                _trust_violations(guard, query, TrustLevel.USER_STATED)
-                for query, _tags, _expected in QUERIES
+            "trust_violations": _trust_violations(
+                naive_hits, guard, TrustLevel.USER_STATED
             ),
         },
         "governed": {
@@ -156,9 +162,8 @@ def run() -> dict[str, object]:
             "stale_rate": round(_rate(governed_hits, STALE_MARKERS), 4),
             "hallucination_rate": round(_rate(governed_hits, HALLUCINATION_MARKERS), 4),
             "injection_rate": round(_rate(governed_hits, INJECTION_MARKERS), 4),
-            "trust_violations": sum(
-                _trust_violations(guard, query, TrustLevel.USER_STATED)
-                for query, _tags, _expected in QUERIES
+            "trust_violations": _trust_violations(
+                naive_hits, guard, TrustLevel.USER_STATED
             ),
         },
         "served": {
@@ -231,3 +236,14 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+from mem_guard.models import SourceKind as _SourceKind
+from mem_guard.provenance import Issuer as _Issuer
+
+
+def new_guard(**kwargs):
+    guard = Guard(**kwargs)
+    guard.register_issuer(
+        _Issuer("chat", frozenset({_SourceKind.USER_STATEMENT, _SourceKind.USER_VERIFIED}))
+    )
+    return guard

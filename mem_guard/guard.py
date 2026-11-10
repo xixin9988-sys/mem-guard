@@ -1,12 +1,15 @@
 """Guard: the small public surface.
 
-    guard = Guard()
-    memory = guard.add("用户喜欢深色模式", source="user_statement", confidence=0.9)
-    hits = guard.search("UI偏好", require_trust_level="user_verified")
+    guard = Guard(path="mem.json")          # durable, survives a restart
+    guard = Guard()                          # in-memory, for tests and demos
 
-Writing goes through provenance validation, state governance, trust partitioning and the
-consolidation gate. Reading selects partitions first, then ranks — it never runs per-item
-policy checks.
+    guard.register_issuer(Issuer("chat", frozenset({SourceKind.USER_STATEMENT})))
+    guard.add("I prefer dark mode", source="user_statement", issuer="chat")
+    guard.search("UI preference", require_trust_level="user_stated", consumer="agent")
+
+Trust is minted by an **attested issuer**, never by the string a caller passes. Conflicts are
+resolved atomically: a memory that becomes ``CONFLICT`` never supersedes anything. Retrieval
+filters by partition, trust rank and consumer policy.
 """
 
 from __future__ import annotations
@@ -18,18 +21,22 @@ from datetime import UTC, datetime
 from typing import Any
 
 from mem_guard.consolidation import Candidate, ConsolidationGate, GateAction, GateDecision
-from mem_guard.governance import Governance
+from mem_guard.governance import Governance, GovernanceError
 from mem_guard.models import (
     Memory,
     MemoryState,
     Partition,
+    Policy,
     Provenance,
     SourceKind,
     TrustLevel,
+    memory_from_dict,
     trust_rank,
+    utc_now,
 )
-from mem_guard.provenance import ProvenanceValidator, ValidationResult
+from mem_guard.provenance import Issuer, IssuerRegistry, ProvenanceValidator, ValidationResult
 from mem_guard.rules import Decision, Rule, RuleAction, RuleCompiler
+from mem_guard.store import InMemoryStore, JsonFileStore, Store
 from mem_guard.trust import PolicyEngine
 
 _WORD = re.compile(r"[A-Za-z0-9_]{2,}")
@@ -84,6 +91,7 @@ class AddResult:
             "validation": {
                 "ok": self.validation.ok,
                 "trust": self.validation.trust.value,
+                "attested": self.validation.attested,
                 "reasons": list(self.validation.reasons),
                 "quarantine": self.validation.quarantine,
             },
@@ -97,13 +105,60 @@ class AddResult:
 class Guard:
     """Memory Reliability & Governance middleware with a two-method happy path."""
 
-    def __init__(self, *, consolidate: bool = True) -> None:
-        self.governance = Governance()
+    def __init__(
+        self,
+        *,
+        store: Store | None = None,
+        path: str | None = None,
+        consolidate: bool = True,
+    ) -> None:
+        self.store: Store = store or (JsonFileStore(path) if path else InMemoryStore())
         self.validator = ProvenanceValidator()
         self.policy = PolicyEngine()
         self.gate = ConsolidationGate()
         self.rules = RuleCompiler()
+        self.governance = Governance()
         self.consolidate = consolidate
+        self.audit_log: list[dict[str, Any]] = []
+        self._load()
+
+    # ------------------------------------------------------------------ persistence
+    @property
+    def durable(self) -> bool:
+        return bool(getattr(self.store, "durable", False))
+
+    def _load(self) -> None:
+        state = self.store.load()
+        for payload in state.get("memories", []):
+            memory = memory_from_dict(payload)
+            self.governance.register(memory)
+        self.audit_log = list(state.get("audit", []))
+
+    def _persist(self) -> None:
+        self.store.save(
+            {
+                "schema_version": 1,
+                "saved_at": utc_now(),
+                "memories": [memory.to_dict() for memory in self.governance.memories.values()],
+                "audit": self.audit_log,
+            }
+        )
+
+    def _audit(self, event: str, memory_id: str, detail: str) -> None:
+        self.audit_log.append(
+            {"at": utc_now(), "event": event, "memory_id": memory_id, "detail": detail}
+        )
+
+    def audit(self) -> tuple[dict[str, Any], ...]:
+        return tuple(dict(entry) for entry in self.audit_log)
+
+    # ------------------------------------------------------------------ trust roots
+    def register_issuer(self, issuer: Issuer) -> Issuer:
+        """Register a trusted adapter; only these may assert beyond ``untrusted``."""
+        return self.validator.issuers.register(issuer)
+
+    def issuers(self) -> tuple[str, ...]:
+        return self.validator.issuers.names()
 
     # ------------------------------------------------------------------ write
     def add(
@@ -111,6 +166,7 @@ class Guard:
         content: str,
         *,
         source: str | SourceKind = "user_statement",
+        issuer: str | None = None,
         confidence: float = 0.8,
         tags: tuple[str, ...] = (),
         valid_until: str | None = None,
@@ -119,39 +175,53 @@ class Guard:
         is_preference: bool = False,
         decision_weight: float = 0.0,
         repetitions: int = 1,
+        allowed_consumers: frozenset[str] | None = None,
     ) -> AddResult:
         validation = self.validator.validate(
-            content, source, confidence=confidence, evidence=evidence
+            content, source, issuer=issuer, confidence=confidence, evidence=evidence
         )
         compiled = self.policy.compile(
             validation.trust,
             confidence=confidence,
             quarantine=validation.quarantine or not validation.ok,
-            verified=validation.source is SourceKind.USER_VERIFIED,
+            verified=validation.trust is TrustLevel.USER_VERIFIED,
         )
+        policy = compiled.policy
+        if allowed_consumers is not None:
+            policy = Policy(
+                allowed_consumers=frozenset(allowed_consumers),
+                min_trust=policy.min_trust,
+                retention=policy.retention,
+                note=policy.note,
+            )
         memory = Memory(
             content=content.strip(),
-            provenance=Provenance(kind=validation.source, reference=reference, evidence=evidence),
+            provenance=Provenance(
+                kind=validation.source,
+                reference=reference,
+                issuer=issuer,
+                evidence=evidence,
+            ),
             trust=validation.trust,
             confidence=confidence,
             tags=tags,
             state=MemoryState.ACTIVE,
             partition=compiled.partition,
             valid_until=valid_until,
-            policy=compiled.policy,
+            policy=policy,
         )
 
         conflicts: list[str] = []
-        superseded: list[str] = []
-        if memory.state is MemoryState.ACTIVE:
-            conflicts, superseded = self._reconcile(memory)
-
+        supersede_candidates: list[str] = []
         gate = self._gate(
             memory,
             is_preference=is_preference,
             decision_weight=decision_weight,
             repetitions=repetitions,
         )
+        if validation.ok and gate.action is not GateAction.QUARANTINE:
+            conflicts, supersede_candidates = self._reconcile(memory)
+
         if not validation.ok:
             memory.record_transition(MemoryState.QUARANTINED, "provenance rejected", "validator")
             memory.partition = Partition.QUARANTINE
@@ -161,35 +231,43 @@ class Guard:
             )
             memory.partition = Partition.QUARANTINE
         elif conflicts:
+            # Atomicity: a conflicting memory must not displace the older one.
             memory.record_transition(
                 MemoryState.CONFLICT, "contradicts an existing memory", "governance"
             )
-        elif (
-            gate.action is GateAction.PROMOTE
-            or not self.consolidate
-            or memory.trust in {TrustLevel.USER_STATED, TrustLevel.USER_VERIFIED}
+        elif gate.action is GateAction.PROMOTE or (
+            validation.trust in {TrustLevel.USER_STATED, TrustLevel.USER_VERIFIED}
         ):
             memory.state = MemoryState.ACTIVE
         else:
-            memory.record_transition(
-                MemoryState.PENDING_REVIEW, f"gate: {gate.action.value}", "gate"
-            )
+            memory.record_transition(MemoryState.PENDING_REVIEW, f"gate: {gate.action.value}", "gate")
 
         self.governance.register(memory)
-        for old_id in superseded:
-            self.governance.supersede(old_id, memory.id)
+        applied_supersede: list[str] = []
+        if memory.state is MemoryState.ACTIVE and not conflicts:
+            for old_id in supersede_candidates:
+                self.governance.supersede(old_id, memory.id)
+                applied_supersede.append(old_id)
+                self._audit("superseded", old_id, f"by {memory.id}")
+
+        self._audit(
+            "added",
+            memory.id,
+            f"trust={memory.trust.value} state={memory.state.value} attested={validation.attested}",
+        )
+        self._persist()
         return AddResult(
             memory=memory,
             validation=validation,
             gate=gate,
             conflicts=conflicts,
-            superseded=superseded,
+            superseded=applied_supersede,
             accepted=memory.state is MemoryState.ACTIVE,
         )
 
     def _reconcile(self, memory: Memory) -> tuple[list[str], list[str]]:
         conflicts: list[str] = []
-        superseded: list[str] = []
+        supersede: list[str] = []
         for existing in self.governance.active():
             if existing.id == memory.id:
                 continue
@@ -203,10 +281,10 @@ class Guard:
                 same_trust and memory.observed_at >= existing.observed_at
             )
             if newer and score >= 0.6:
-                superseded.append(existing.id)
+                supersede.append(existing.id)
             elif score >= 0.45:
                 conflicts.append(existing.id)
-        return conflicts, superseded
+        return conflicts, supersede
 
     def _gate(
         self,
@@ -217,9 +295,7 @@ class Guard:
         repetitions: int,
     ) -> GateDecision:
         if not self.consolidate:
-            from mem_guard.consolidation import GateAction as _Action
-
-            return GateDecision(_Action.PROMOTE, 1.0, ("consolidation disabled",))
+            return GateDecision(GateAction.PROMOTE, 1.0, ("consolidation disabled",))
         best = 0.0
         for existing in self.governance.active():
             best = max(best, similarity(existing.content, memory.content))
@@ -232,6 +308,7 @@ class Guard:
                 decision_weight=decision_weight,
                 similarity_to_existing=best,
                 evidence_count=len(memory.provenance.evidence),
+                confidence=memory.confidence,
             )
         )
 
@@ -241,6 +318,7 @@ class Guard:
         query: str,
         *,
         require_trust_level: str | TrustLevel = TrustLevel.USER_STATED,
+        consumer: str = "agent",
         limit: int = 5,
         tags: tuple[str, ...] = (),
     ) -> list[SearchHit]:
@@ -254,11 +332,14 @@ class Guard:
         for memory in self.governance.memories.values():
             allowed_states = {MemoryState.ACTIVE}
             if required is TrustLevel.UNTRUSTED:
-                # An explicit inspector may read what was quarantined, never a normal agent.
                 allowed_states.add(MemoryState.QUARANTINED)
             if memory.state not in allowed_states or memory.partition not in partitions:
                 continue
             if trust_rank(memory.trust) < required_rank or memory.is_expired(now=now):
+                continue
+            # Consumer authorization comes from the precompiled policy. An explicit
+            # inspector (require_trust_level=untrusted) bypasses consumer gating.
+            if required is not TrustLevel.UNTRUSTED and not memory.policy.permits(consumer):
                 continue
             if wanted and not wanted <= set(memory.tags):
                 continue
@@ -289,19 +370,35 @@ class Guard:
 
     # ------------------------------------------------------------------ governance ops
     def supersede(self, old_id: str, new_id: str) -> Memory:
-        return self.governance.supersede(old_id, new_id)
+        old = self.governance.supersede(old_id, new_id)
+        self._audit("superseded", old_id, f"by {new_id} (explicit)")
+        self._persist()
+        return old
 
     def confirm(self, memory_id: str) -> Memory:
-        return self.governance.confirm(memory_id)
+        memory = self.governance.confirm(memory_id)
+        self._audit("confirmed", memory_id, "human confirmation")
+        self._persist()
+        return memory
 
     def archive(self, memory_id: str) -> Memory:
-        return self.governance.archive(memory_id)
+        memory = self.governance.archive(memory_id)
+        self._audit("archived", memory_id, "archived")
+        self._persist()
+        return memory
 
     def explain(self, memory_id: str) -> dict[str, Any]:
-        return self.governance.explain(memory_id)
+        explained = self.governance.explain(memory_id)
+        explained["audit"] = [
+            dict(entry) for entry in self.audit_log if entry["memory_id"] == memory_id
+        ]
+        return explained
 
     def stats(self) -> dict[str, Any]:
-        return self.governance.stats()
+        stats = self.governance.stats()
+        stats["durable"] = self.durable
+        stats["audit_events"] = len(self.audit_log)
+        return stats
 
     # ------------------------------------------------------------------ rules
     def add_rule(self, rule: Rule) -> Rule:
@@ -310,9 +407,5 @@ class Guard:
     def evaluate_rule(self, text: str, *, scope: str = "*") -> Decision:
         return self.rules.evaluate(text, scope=scope)
 
-    # ------------------------------------------------------------------ demo helpers
-    def reset(self) -> None:
-        self.governance = Governance()
 
-
-__all__ = ["AddResult", "Guard", "Rule", "RuleAction", "SearchHit", "similarity", "tokens"]
+__all__ = ["AddResult", "Guard", "SearchHit", "Rule", "RuleAction", "similarity", "tokens"]

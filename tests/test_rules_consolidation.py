@@ -155,3 +155,14 @@ def test_gate_defers_mid_signal() -> None:
         )
     )
     assert decision.action is GateAction.DEFER
+
+from mem_guard.models import SourceKind as _SourceKind
+from mem_guard.provenance import Issuer as _Issuer
+
+
+def new_guard(**kwargs):
+    guard = Guard(**kwargs)
+    guard.register_issuer(
+        _Issuer("chat", frozenset({_SourceKind.USER_STATEMENT, _SourceKind.USER_VERIFIED}))
+    )
+    return guard

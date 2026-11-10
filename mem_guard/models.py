@@ -1,4 +1,4 @@
-"""Core data model: provenance, trust, state, partition and memory records."""
+﻿"""Core data model: provenance, trust, state, partition and memory records."""
 
 from __future__ import annotations
 
@@ -81,19 +81,21 @@ class Provenance:
 
     kind: SourceKind
     reference: str | None = None
+    issuer: str | None = None
     captured_at: str = field(default_factory=utc_now)
     evidence: tuple[str, ...] = ()
     integrity: str = ""
 
     def __post_init__(self) -> None:
         if not self.integrity:
-            payload = f"{self.kind.value}|{self.reference or ''}|{self.captured_at}"
+            payload = f"{self.kind.value}|{self.issuer or ''}|{self.reference or ''}|{self.captured_at}"
             self.integrity = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:32]
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "kind": self.kind.value,
             "reference": self.reference,
+            "issuer": self.issuer,
             "captured_at": self.captured_at,
             "evidence": list(self.evidence),
             "integrity": self.integrity,
@@ -191,3 +193,37 @@ class Memory:
             "policy": self.policy.to_dict(),
             "history": list(self.history),
         }
+def memory_from_dict(data: dict[str, Any]) -> Memory:
+    """Rebuild a memory from its serialised form (persistence round-trip)."""
+    provenance = Provenance(
+        kind=SourceKind(data["provenance"]["kind"]),
+        reference=data["provenance"].get("reference"),
+        issuer=data["provenance"].get("issuer"),
+        captured_at=data["provenance"]["captured_at"],
+        evidence=tuple(data["provenance"].get("evidence", ())),
+        integrity=data["provenance"].get("integrity", ""),
+    )
+    policy_data = data.get("policy", {})
+    policy = Policy(
+        allowed_consumers=frozenset(policy_data.get("allowed_consumers", ["*"])),
+        min_trust=TrustLevel(policy_data.get("min_trust", "untrusted")),
+        retention=policy_data.get("retention", "standard"),
+        note=policy_data.get("note"),
+    )
+    return Memory(
+        id=data["id"],
+        content=data["content"],
+        provenance=provenance,
+        trust=TrustLevel(data["trust"]),
+        confidence=float(data.get("confidence", 0.8)),
+        tags=tuple(data.get("tags", ())),
+        state=MemoryState(data.get("state", "active")),
+        partition=Partition(data.get("partition", "private")),
+        observed_at=data.get("observed_at", utc_now()),
+        valid_until=data.get("valid_until"),
+        supersedes=list(data.get("supersedes", [])),
+        superseded_by=data.get("superseded_by"),
+        version=int(data.get("version", 1)),
+        policy=policy,
+        history=list(data.get("history", [])),
+    )
