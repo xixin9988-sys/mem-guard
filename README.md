@@ -1,12 +1,86 @@
-﻿> **v0.1.1 status (verified):** issuer attestation, atomic supersede, consumer policy, audit log and ConflictReport are implemented and tested (33 passed). **JSON persistence (store.py) is not in this tree yet**; the README claim about Guard(path=...) is aspirational and tracked in the roadmap.
+> **v2.0 status (verified):** the governance library is unchanged and still green, and a new
+> gateway ships alongside it — signed tenant scope, injection/PII screening, rate limits and
+> daily budgets, hash-chained audit, feedback loop and a grounded-answer guard, in front of
+> NanoMemory's vector store. Test suite: 91 passed.
 
 # mem-guard
 
-**Memory Reliability & Governance Middleware** for AI agents. **v0.1.1 — governance integrity.**
+**Memory Reliability & Governance** for AI agents — library + gateway. **v2.0 — production gate.**
+
+Two ways to use it:
+
+| Mode | Use it when | Entry point |
+| --- | --- | --- |
+| **Library** | memory lives inside your process and you need provenance, trust and rules | `Guard()` |
+| **Gateway** | memory is NanoMemory's vector store and you need tenant isolation, safety, cost control and audit per call | `uvicorn mem_guard.server:app` |
+
+```mermaid
+flowchart LR
+  U[end user] -->|JWT| O[OmniCare BFF]
+  O -->|service key + scope| G[mem-guard]
+  G -->|signed HMAC scope| N[NanoMemory]
+  G --> A[(hash-chained audit)]
+  G --> Q[(quota ledger)]
+  G --> F[(feedback)]
+```
+
+## Gateway in one screen
+
+```bash
+pip install -e ".[gateway]"
+MEM_GUARD_CONTEXT_SIGNING_KEY=dev-shared-secret \
+  uvicorn mem_guard.server:app --port 8080
+```
+
+```bash
+curl -X POST http://127.0.0.1:8080/v1/guard/remember \
+  -H 'Content-Type: application/json' \
+  -H 'X-Guard-Tenant: acme' -H 'X-Guard-User: u-1' \
+  -d '{"content":"客户电话 13800001234，订单 A1001 已签收。","category":"order"}'
+```
+
+```json
+{"record":{"id":"vec-…"},"trace_id":"tr-…",
+ "guard":{"decision":"redact","safety":[{"kind":"cn_phone","severity":"medium"}],
+          "quota_remaining":{"embedding_tokens":199988}}}
+```
+
+What the gateway enforces on every call:
+
+| Control | Behaviour | Reference |
+| --- | --- | --- |
+| Scope | tenant/user only from authenticated headers, re-signed for NanoMemory | `docs/THREAT_MODEL.md` T1/T2 |
+| Prompt injection | scored on write **and** query; high severity → 422, audited | `injection.py` |
+| PII / secrets | redacted before embedding (or blocked in strict mode) | `safety.py` |
+| Cost | token bucket 429 + daily token/write budgets 429 | `quota.py` |
+| Audit | hash-chained JSONL; `/healthz` verifies the chain | `audit.py` |
+| Feedback | 👍/👎 tied to `trace_id`; outage-tolerant local copy | `feedback.py` |
+| Grounded answers | identifiers/dates/amounts in the answer must exist in the evidence | `grounding.py` |
+
+## Grounding example
+
+```bash
+curl -X POST http://127.0.0.1:8080/v1/guard/grounding/check \
+  -H 'Content-Type: application/json' \
+  -H 'X-Guard-Tenant: acme' -H 'X-Guard-User: u-1' \
+  -d '{"question":"C9999 的状态？","answer":"C9999 已发货。","evidence":["A1001 已签收。"]}'
+```
+
+```json
+{"action":"insufficient_evidence","reasons":["question_entity_not_in_evidence"],
+ "missing_question_entities":["C9999"]}
+```
+
+This is the answer-level half of the eval loop: NanoMemory's retrieval eval marks these cases as
+`grounding` and hands them to this guard, instead of inflating a recall number.
+
+### Library (unchanged)
 
 Your agent remembers a lot. mem-guard decides what it is allowed to **believe**, **serve** and
 **act on** — with provenance, governed state, precompiled trust policies and a rule compiler.
 It is not another memory store: it is the layer between memory and model.
+
+### Library quick start
 
 ```python
 from mem_guard import Guard

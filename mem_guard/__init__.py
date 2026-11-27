@@ -1,16 +1,24 @@
 """mem-guard — Memory Reliability & Governance Middleware.
 
-Memory belongs to the user, not the model. mem-guard is the layer that keeps that promise
-enforceable: every memory carries provenance, a governed state, a precompiled trust policy
-and a partition, so retrieval can be filtered *before* it reaches the model.
+Two layers ship in one package:
 
-Quick start::
+* the original in-process governance library (Guard: provenance, trust, state, partitions,
+  consolidation rules) — still the right tool when memory lives inside your process;
+* the v2 gateway (MemoryGateway + FastAPI app) that sits in front of NanoMemory's vector store:
+  signed tenant scope, prompt-injection and PII screening, per-tenant rate limits and budgets,
+  hash-chained audit, feedback loop and a grounded-answer guard.
+
+Quick start (library)::
 
     from mem_guard import Guard
 
     guard = Guard()
-    memory = guard.add("用户喜欢深色模式", source="user_statement", confidence=0.9)
+    guard.add("用户喜欢深色模式", source="user_statement", confidence=0.9)
     hits = guard.search("UI偏好", require_trust_level="user_verified")
+
+Quick start (gateway)::
+
+    uvicorn mem_guard.server:app --port 8080
 """
 
 from __future__ import annotations
@@ -39,4 +47,4 @@ __all__ = [
     "__version__",
 ]
 
-__version__ = "0.1.0"
+__version__ = "2.0.0"

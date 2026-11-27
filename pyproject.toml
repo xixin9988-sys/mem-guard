@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mem-guard"
-version = "0.1.0"
-description = "Memory Reliability & Governance Middleware for AI agents: provenance, state, trust partitions and rule governance."
+version = "2.0.0"
+description = "Memory Reliability & Governance: provenance/trust library plus a security, quota and audit gateway for NanoMemory vector memory."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
@@ -18,10 +18,11 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
 ]
-dependencies = []
+dependencies = ["pydantic>=2.7"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "ruff>=0.6"]
+gateway = ["fastapi>=0.110", "httpx>=0.27", "uvicorn>=0.29"]
+dev = ["pytest>=8", "ruff>=0.6", "fastapi>=0.110", "httpx>=0.27"]
 
 [project.scripts]
 mem-guard = "mem_guard.cli:main"
@@ -35,6 +36,8 @@ packages = ["mem_guard"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 
 [tool.ruff]
 line-length = 100
@@ -43,3 +46,9 @@ src = ["mem_guard", "tests", "benchmarks"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+# RUF001 flags full-width CJK punctuation ("，", "？"); this product is bilingual by design.
+ignore = ["RUF001"]
+
+[tool.ruff.lint.per-file-ignores]
+# FastAPI dependency injection requires calling Depends() in signature defaults.
+"mem_guard/server.py" = ["B008"]
