@@ -16,8 +16,9 @@ The two projects compose through a typed, versioned contract. A memory record ma
 
 1. Authentication establishes the principal. A request body, memory text, model output or embedding cannot establish identity.
 2. Authorization is distinct from trust. Trust answers "what is the origin/evidence of this record?"; authorization answers "may this principal access it?"
-3. Access constraints are compiled before retrieval and enforced by the database repository before vector candidate ranking.
-4. Post-filtering a global nearest-neighbour result in Python is not an acceptable tenant or document-security boundary.
+3. Access constraints are compiled before retrieval and resolved to physical security domains; NanoMemory must search only authorized ANN partitions.
+4. A shared global HNSW index plus a WHERE/RLS predicate is not sufficient to claim pre-ANN isolation: pgvector approximate-index filters may be applied after the index scan, and shared indexes can affect other tenants' recall and latency. Use partition pruning into authorized domains, an exact filtered scan for finer ACLs, or deny.
+5. Post-filtering a global nearest-neighbour result in Python is not an acceptable tenant or document-security boundary.
 5. Missing identity, missing policy, unknown fields, invalid policy version or repository inability to apply a filter must fail closed.
 6. Model-generated memory or tool output cannot grant itself a higher trust level, role or scope.
 7. A policy decision is attributable to a version, rule IDs, actor, resource scope, decision and reason code.
@@ -56,6 +57,7 @@ No raw embedding is required by mem-guard. The policy engine should operate on s
 A typed, immutable plan, not caller-supplied SQL:
 - mandatory tenant ID
 - allowed owner IDs / collection IDs
+- allowed security_domain_ids (mandatory for ANN access)
 - allowed lifecycle states
 - allowed trust levels
 - sensitivity constraints
@@ -78,8 +80,8 @@ The NanoMemory repository translates this plan into SQL predicates and PostgreSQ
 1. OmniCare or another trusted BFF authenticates the caller.
 2. NanoMemory receives a signed or otherwise verified service identity and a request-scoped AuthorizationContext.
 3. mem-guard validates the context and compiles a RetrievalFilterPlan.
-4. NanoMemory verifies plan version and required tenant binding.
-5. NanoMemory applies the plan inside the PostgreSQL query and row-level security before ANN and lexical candidate retrieval.
+4. NanoMemory verifies the policy version, mandatory tenant binding and allowed security_domain_ids.
+5. NanoMemory uses partition pruning so only authorized security-domain partitions participate in ANN retrieval; it applies remaining owner/status/trust predicates in SQL and RLS as defence in depth. For ACLs that do not align with a security domain, it uses exact filtered search or denies.
 6. Only authorized candidates proceed to rank fusion, reranking and context packing.
 7. The result includes policy version, decision IDs and score breakdown, but only permitted records.
 8. Both systems emit correlated audit events using the same request/run ID.
@@ -167,6 +169,8 @@ Persist policy packs and decision audits independently from memory content. If p
 - Public API types and compatibility policy documented.
 - Contract tests pass against the exact supported NanoMemory release.
 - Tenant and collection isolation tests pass against PostgreSQL + pgvector.
+- EXPLAIN-plan tests verify only allowed partitions are scanned; shared global ANN indexes are not accepted for mutually isolated scopes.
+- Fine-grained ACL fallback uses exact filtered search or fails closed, never post-filters a global ANN result.
 - No retrieval route can bypass the compiled access plan.
 - Policy failure is fail-closed and observable.
 - Policy decision traces and audit retention are documented.
